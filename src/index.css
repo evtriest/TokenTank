@@ -2530,3 +2530,96 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* Choosing what to scan before anything leaves the panel */
+
+.scan-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scan-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+.scan-choice.is-on {
+  border-color: color-mix(in oklab, var(--good) 45%, var(--border));
+  background: color-mix(in oklab, var(--good) 7%, transparent);
+}
+
+.scan-choice input {
+  margin-top: 3px;
+  accent-color: var(--good);
+}
+
+.scan-choice svg {
+  margin-top: 2px;
+  flex: none;
+  color: var(--dim);
+}
+
+.scan-choice strong {
+  display: block;
+  font-size: 12px;
+}
+
+.scan-choice small {
+  display: block;
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.scan-choice:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.scan-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.scan-warn svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.scan-warn--danger {
+  color: #ffb4a2;
+  border: 1px solid rgba(255, 106, 106, 0.45);
+  background: rgba(255, 106, 106, 0.1);
+}
+
+.scan-confirm {
+  border: 1px solid rgba(255, 106, 106, 0.5);
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: rgba(255, 106, 106, 0.08);
+}
+
+.scan-confirm p {
+  margin: 0;
+  color: #ffd9d1;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.scan-confirm strong {
+  color: #ffb4a2;
+}

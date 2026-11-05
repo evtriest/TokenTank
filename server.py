@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""TokenTank panel server: static build plus a local-network model scanner.
+"""TokenTank panel server: static build plus a model scanner.
 
-Serves the built panel and answers GET /api/scan with every device it can see
-on the local subnet, and the model list of any host running Ollama or an
-OpenAI-compatible server. Scans are cached briefly so a page reload is cheap;
-`?refresh=1` (the Scan network button) always does a fresh sweep.
+Serves the built panel, answers GET /api/context with this server's network
+state, and GET /api/scan with every device it can see. Without a target the scan
+covers the private LAN when there is one, otherwise only this server. `?target=`
+points it at one address, a range (10.0.0.10-50) or a subnet; a public target
+needs `&confirm=public` first. `?refresh=1` always does a fresh sweep.
 """
 
 from __future__ import annotations
@@ -244,16 +245,23 @@ def scan_device(ip: str, hostname: str) -> dict[str, object]:
     }
 
 
-def scan_network() -> dict[str, object]:
-    local_ip, prefix = local_ip_and_prefix()
-    network = network_for(local_ip, prefix)
+def hosts_in(networks: list[ipaddress.IPv4Network]) -> dict[str, str]:
+    """Ping-sweep the given networks, plus anything already in the ARP table."""
+    hosts: dict[str, str] = {}
+    for network in networks:
+        hosts.update(nmap_sweep(str(network)))
 
-    hosts = nmap_sweep(str(network))
-    for ip in arp_hosts():
-        if ipaddress.ip_address(ip) in network:
-            hosts.setdefault(ip, "")
-    hosts[local_ip] = hosts.get(local_ip) or socket.gethostname()
+    local_ip, _ = local_ip_and_prefix()
+    reachable = [network for network in networks if ipaddress.ip_address(local_ip) in network]
+    if reachable:
+        for ip in arp_hosts():
+            if any(ipaddress.ip_address(ip) in network for network in reachable):
+                hosts.setdefault(ip, "")
+        hosts[local_ip] = hosts.get(local_ip) or socket.gethostname()
+    return hosts
 
+
+def inspect_hosts(hosts: dict[str, str]) -> list[dict[str, object]]:
     def inspect(ip: str) -> dict[str, object]:
         return scan_device(ip, hosts.get(ip) or reverse_name(ip))
 
@@ -261,18 +269,93 @@ def scan_network() -> dict[str, object]:
         devices = list(pool.map(inspect, list(hosts)))
 
     devices.sort(key=lambda device: tuple(int(part) for part in str(device["ip"]).split(".")))
+    return devices
 
+
+def parse_target(raw: str) -> tuple[list[ipaddress.IPv4Network], str, bool]:
+    """One address, a range (10.0.0.10-50 or 10.0.0.10-10.0.0.50), or a subnet.
+
+    Returns the networks to sweep, a label for the panel, and whether the target
+    lies outside the private address space.
+    """
+    text = raw.strip()
+    if not text:
+        raise ValueError("Give an address, a range or a subnet.")
+
+    if "/" in text:
+        try:
+            networks = [ipaddress.ip_network(text, strict=False)]
+        except ValueError:
+            raise ValueError(f"{text} is not a subnet. Use something like 192.168.1.0/24.") from None
+    elif "-" in text:
+        left, right = (part.strip() for part in text.split("-", 1))
+        try:
+            start = ipaddress.ip_address(left)
+            end = (
+                ipaddress.ip_address(right)
+                if "." in right
+                else ipaddress.ip_address(f"{left.rsplit('.', 1)[0]}.{right}")
+            )
+        except ValueError:
+            raise ValueError(
+                f"{text} is not a range. Use 192.168.1.10-50 or 192.168.1.10-192.168.1.50."
+            ) from None
+        if not isinstance(start, ipaddress.IPv4Address) or int(end) < int(start):
+            raise ValueError("That range does not run forwards.")
+        networks = list(ipaddress.summarize_address_range(start, end))
+    else:
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError:
+            raise ValueError(f"{text} is not an IPv4 address.") from None
+        networks = [ipaddress.ip_network(f"{address}/32", strict=False)]
+
+    if any(not isinstance(network, ipaddress.IPv4Network) for network in networks):
+        raise ValueError("Only IPv4 is scanned here.")
+
+    total = sum(network.num_addresses for network in networks)
+    if total > MAX_HOSTS:
+        raise ValueError(f"That target holds {total} addresses; the limit is {MAX_HOSTS}.")
+
+    if len(networks) == 1:
+        label = str(networks[0].network_address) if networks[0].num_addresses == 1 else str(networks[0])
+    else:
+        label = text
+    return networks, label, not networks[0].network_address.is_private
+
+
+def scan_target(networks: list[ipaddress.IPv4Network], label: str, public: bool) -> dict[str, object]:
+    local_ip, _ = local_ip_and_prefix()
     return {
-        "mode": "local",
+        "scope": "custom",
+        "target": label,
+        "public": public,
+        "localNetwork": ipaddress.ip_address(local_ip).is_private,
+        "scannedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "subnet": label,
+        "localIp": local_ip,
+        "devices": inspect_hosts(hosts_in(networks)),
+    }
+
+
+def scan_local() -> dict[str, object]:
+    """Sweep the private network this machine sits on."""
+    local_ip, prefix = local_ip_and_prefix()
+    network = network_for(local_ip, prefix)
+    return {
+        "scope": "local",
+        "target": str(network),
+        "public": False,
+        "localNetwork": ipaddress.ip_address(local_ip).is_private,
         "scannedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "subnet": str(network),
         "localIp": local_ip,
-        "devices": devices,
+        "devices": inspect_hosts(hosts_in([network])),
     }
 
 
 def scan_self() -> dict[str, object]:
-    """Cloud mode: read this server's own model endpoints, nothing on the LAN."""
+    """Read this server's own model endpoints, nothing on any network."""
     name = socket.gethostname()
     local_ip, _ = local_ip_and_prefix()
     device = scan_device("127.0.0.1", name)
@@ -280,12 +363,36 @@ def scan_self() -> dict[str, object]:
     # Read means read: there may simply be no model server on this box.
     device["reachable"] = True
     return {
-        "mode": "cloud",
+        "scope": "self",
+        "target": "this server",
+        "public": False,
+        "localNetwork": ipaddress.ip_address(local_ip).is_private,
         "scannedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "subnet": "",
         "localIp": local_ip,
         "hostname": name,
         "devices": [device],
+    }
+
+
+def scan_default(cloud: bool = False) -> dict[str, object]:
+    """A scan without a target: the private LAN when there is one, else itself."""
+    local_ip, _ = local_ip_and_prefix()
+    if not cloud and ipaddress.ip_address(local_ip).is_private:
+        return scan_local()
+    return scan_self()
+
+
+def server_context(cloud: bool) -> dict[str, object]:
+    local_ip, prefix = local_ip_and_prefix()
+    private = ipaddress.ip_address(local_ip).is_private
+    return {
+        "hostname": socket.gethostname(),
+        "localIp": local_ip,
+        "subnet": str(network_for(local_ip, prefix)) if private else "",
+        "localNetwork": private,
+        "cloud": cloud,
+        "maxHosts": MAX_HOSTS,
     }
 
 
@@ -395,7 +502,7 @@ def scan_cached(force: bool, cloud: bool = False) -> dict[str, object]:
         if isinstance(cached, dict) and fresh and not force:
             return cached
 
-        payload = scan_self() if cloud else scan_network()
+        payload = scan_default(cloud)
         with _cache_lock:
             _cache["payload"] = payload
             _cache["at"] = time.time()
@@ -447,27 +554,53 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path.rstrip("/") == "/api/ssh/identity":
             self.send_json({"publicKey": public_key(), "path": ssh_key_path()})
             return
+        if parsed.path.rstrip("/") == "/api/context":
+            self.send_json(server_context(self.cloud_mode))
+            return
         if parsed.path.rstrip("/") == "/api/scan":
-            refresh = parse_qs(parsed.query).get("refresh", ["0"])[0]
-            self.send_scan(force=refresh not in ("", "0", "false"))
+            query = parse_qs(parsed.query)
+            refresh = query.get("refresh", ["0"])[0]
+            target = (query.get("target", [""])[0] or "").strip()
+            confirm = (query.get("confirm", [""])[0] or "").strip()
+            self.send_scan(
+                force=refresh not in ("", "0", "false"),
+                target=target,
+                confirm=confirm,
+            )
             return
         super().do_GET()
 
-    def send_scan(self, force: bool) -> None:
+    def send_scan(self, force: bool, target: str = "", confirm: str = "") -> None:
         try:
-            payload: dict[str, object] = scan_cached(force, self.cloud_mode)
+            if target == "self":
+                payload = scan_self()
+            elif target == "local":
+                payload = scan_local()
+            elif target:
+                networks, label, public = parse_target(target)
+                if public and confirm != "public":
+                    self.send_json(
+                        {
+                            "error": (
+                                f"{label} is a public range. A scan of it probes "
+                                "addresses that are not yours, so it needs confirmation."
+                            ),
+                            "public": True,
+                            "target": label,
+                        },
+                        409,
+                    )
+                    return
+                payload = scan_target(networks, label, public)
+            else:
+                payload = scan_cached(force, self.cloud_mode)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, 400)
+            return
         except Exception as error:  # noqa: BLE001 - surface the reason to the panel
-            body = json.dumps({"error": str(error)}).encode("utf-8")
-            self.send_response(500)
-        else:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+            self.send_json({"error": str(error)}, 500)
+            return
+        self.send_json(payload)
 
     def log_message(self, format: str, *args: object) -> None:
         if "/api/scan" in self.path:
@@ -484,7 +617,7 @@ def main() -> None:
     parser.add_argument(
         "--cloud",
         action="store_true",
-        help="read only this server instead of scanning the local network",
+        help="never sweep the local network: a scan without a target reads this server",
     )
     args = parser.parse_args()
 

@@ -95,7 +95,7 @@ export interface ProviderDraft {
 }
 
 export interface AppState {
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   providers: Provider[]
   machines?: Machine[]
   dataAt?: string | null

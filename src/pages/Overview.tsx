@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react'
-import { PANEL_MODE, useStore } from '../store'
+import { useStore } from '../store'
 import { ProviderCard } from '../components/ProviderCard'
 import { WatchCard } from '../components/WatchCard'
 import { LocalHosts } from '../components/LocalHosts'
@@ -28,17 +28,17 @@ export function Overview({
     scan,
     scanning,
     scanError,
-    scanNetwork,
+    serverOnly,
     refreshData,
     removeMachine,
     moveProvider,
     setProviderStatus,
   } = useStore()
 
-  // On the cloud panel the server is not something you rotate: it is what the
-  // live section reads. Rotation and the try list start empty there.
+  // On a server without a private network the local entry is not a provider you
+  // rotate: it is what the live section reads.
   const ranked = providers.filter(
-    (provider) => !(PANEL_MODE === 'cloud' && provider.kind === 'local'),
+    (provider) => !(serverOnly && provider.kind === 'local'),
   )
   const active = ranked
     .filter((provider) => provider.status === 'active')
@@ -118,16 +118,16 @@ export function Overview({
         <section className="host-section" aria-label="Local model machines">
           <div className="section-head">
             <div>
-              <h2>{PANEL_MODE === 'cloud' ? 'Live on this server' : 'Local compute'}</h2>
+              <h2>{serverOnly ? 'Live on this server' : 'Local compute'}</h2>
               <p>
                 {machines.length > 0
                   ? `${local.models.length} local model${
                       local.models.length === 1 ? '' : 's'
                     } — ${describeSplit(local.models, machines)}${
-                      PANEL_MODE === 'cloud' ? ', read from this server' : ''
+                      serverOnly ? ', read on this server' : ''
                     }.`
-                  : PANEL_MODE === 'cloud'
-                    ? 'This panel runs on the VPS. Read the server, or add another machine by hand.'
+                  : serverOnly
+                    ? 'Nothing is listening here yet. Read this server, or add another machine by hand.'
                     : 'No machines yet. Scan the network to see what is running.'}
               </p>
             </div>
@@ -140,7 +140,6 @@ export function Overview({
             error={scanError}
             scan={scan}
             dataAt={dataAt}
-            onScan={scanNetwork}
             onRefresh={refreshData}
             onAddMachine={onAddMachine}
           />
@@ -235,7 +234,7 @@ export function Overview({
           Quotas here are self-tracked. They start at zero — update them as you use a
           provider. Terms change often, so open a provider to read its rules. Local
           machine data comes from the last{' '}
-          {PANEL_MODE === 'cloud' ? 'read of this server' : 'network scan'}
+          {serverOnly ? 'read of this server' : 'network scan'}
           {dataAt ? ` (${shortDateTime(dataAt)})` : ''}; nothing is polled in the background.
         </p>
       </footer>

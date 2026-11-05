@@ -5,47 +5,55 @@ provider's quota is, how much is left, when it refills, and which models a local
 machine actually serves. No account, no backend database, nothing polled in the
 background.
 
-The panel ships in **two independent versions** built from this one repository.
-They do not talk to each other and each keeps its own state in the browser it
-runs in.
+It is **one panel that runs anywhere**. What it can read is decided at runtime,
+not by a build flag: press Scan and it asks what to read — the local network
+when this machine has one, this server, or an address, range or subnet you name.
+A target outside the private ranges is shown in red and needs a second click
+before anything leaves the server.
 
-| | Local network version | Cloud version |
+| | Private network (the Pi) | Public server (the VPS) |
 | --- | --- | --- |
-| Build | `npm run build` | `npm run build:cloud` |
-| Output | `dist/` | `dist-cloud/` (base `/usage/`) |
-| Reads | every device on the LAN it scans | only the server it runs on, over `127.0.0.1` |
-| Machines | discovered by the scan | one server entry plus machines you add by hand over SSH |
-| Servers | `python3 server.py --port 8094` on the Pi | `python3 server.py --cloud --port 8094 --bind 127.0.0.1` behind nginx |
-| State | `localStorage` key `freetokens.panel.v1` | `localStorage` key `freetokens.panel.cloud.v1` |
+| Build | `npm run build` → `dist/`, base `/` | `npm run build:cloud` → `dist-cloud/`, base `/usage/` |
+| Server | `python3 server.py --port 8094` | `python3 server.py --bind 127.0.0.1 --port 8094` behind nginx |
+| Scan offers | local network · this server · an address or range | this server · an address or range |
+| State | `localStorage` key `freetokens.panel.v1` | the same key, in a different origin |
 
-The storage keys kept their old `freetokens.` prefix on purpose: a panel that
-was already in use keeps its saved state through the rename.
+The two builds differ only in the path the app is served from; the behaviour is
+the same code. The storage key kept its old `freetokens.` prefix on purpose: a
+panel that was already in use keeps its saved state through the rename. It is
+per origin, so the Pi's panel and the VPS's panel never overwrite each other.
 
-The cloud panel starts with an empty rotation and an empty try list: it only
-shows what is live on that server, and it reads the server once when it opens.
-The local panel keeps the full provider inventory.
+A panel with nothing saved adopts the machine it runs on: the provider board
+where there is a private network, only that server's own inventory elsewhere.
+It reads once when it opens; the Scan button is the only other thing that
+touches the network.
 
 ## Run it
 
 ```sh
 npm install
 npm run dev            # development on http://localhost:5173
-npm run build           # local network version -> dist/
-npm run build:cloud     # cloud version -> dist-cloud/ (served under /usage/)
+npm run build           # dist/, served from the root
+npm run build:cloud     # dist-cloud/, served under /usage/
 ```
 
 Both builds typecheck with `tsc --noEmit`; there is no test suite.
 
 ## The two halves
 
-`server.py` is the small scanner behind the panel. It answers three routes:
+`server.py` is the small scanner behind the panel. It answers four routes:
 
-- `GET /api/scan` — the inventory. Without `--cloud` it probes the local
-  `/24` subnet (ARP table, then the known model ports); with `--cloud` it probes
-  `127.0.0.1` only and reports this server.
-- `POST /api/ssh/check` — a non-interactive `ssh … true` so the cloud panel can
-  prove a machine is reachable before it is added. The pasted command must start
-  with `ssh`; shell metacharacters and `ProxyCommand` are refused.
+- `GET /api/context` — where this server lives: its address, the private subnet
+  when it has one, and the address limit for scans. One status read, no probes.
+- `GET /api/scan` — the inventory. Without `?target=` it sweeps the private
+  network when the server sits on one (ARP table, then the known model ports)
+  and reports only this server otherwise. `?target=` takes one address,
+  `192.168.1.10-50` or `192.168.1.0/24`; targets outside the private ranges need
+  `&confirm=public` and are refused above 512 addresses. `--cloud` keeps a
+  target-less scan on this server.
+- `POST /api/ssh/check` — a non-interactive `ssh … true` so the panel can prove
+  a machine is reachable before it is added. The pasted command must start with
+  `ssh`; shell metacharacters and `ProxyCommand` are refused.
 - `GET /api/ssh/identity` — the server's public key, so it can be authorised on
   the machine you add.
 
@@ -91,10 +99,11 @@ $HOME/ollama/bin/ollama pull qwen2.5:0.5b
 src/
   store.tsx              panel state, scan merging, persistence
   data/seed.ts           provider starting data for the local panel
-  data/local.ts          local provider, and the cloud panel's server provider
+  data/local.ts          local provider, and the bare server start
+  lib/target.ts          address, range and subnet checks for the scan dialog
   lib/quota.ts           windows, resets, percentages
   lib/hosts.ts           machine defaults and model split helpers
-  components/            cards, scan bar, add-provider and add-machine modals
+  components/            cards, scan bar + target dialog, add-provider/-machine
   pages/                 overview and provider detail
 server.py                scan + ssh check + static files
 ```

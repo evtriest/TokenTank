@@ -1,12 +1,12 @@
 import { FlaskConical, HardDrive, LayoutDashboard, Plus } from 'lucide-react'
-import { PANEL_MODE, useStore } from '../store'
+import { useStore } from '../store'
 import { percentLabel, percentLeft } from '../lib/quota'
 import { countModelsByMachine } from '../lib/hosts'
 
 export function Sidebar({ onAdd }: { onAdd: () => void }) {
-  const { providers, machines } = useStore()
+  const { providers, machines, serverOnly } = useStore()
   const ranked = providers.filter(
-    (provider) => !(PANEL_MODE === 'cloud' && provider.kind === 'local'),
+    (provider) => !(serverOnly && provider.kind === 'local'),
   )
   const active = ranked.filter((provider) => provider.status === 'active')
   const watchlist = ranked.filter((provider) => provider.status === 'watchlist')

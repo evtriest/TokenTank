@@ -1,13 +1,14 @@
-import { Loader2, Plus, RefreshCw, Server, Wifi } from 'lucide-react'
+import { useState } from 'react'
+import { Loader2, Plus, RefreshCw, Wifi } from 'lucide-react'
 import { shortDateTime } from '../lib/display'
-import { PANEL_MODE, type ScanResult } from '../store'
+import type { ScanResult } from '../store'
+import { ScanTargetModal } from './ScanTargetModal'
 
 export function ScanBar({
   scanning,
   error,
   scan,
   dataAt,
-  onScan,
   onRefresh,
   onAddMachine,
 }: {
@@ -15,11 +16,10 @@ export function ScanBar({
   error: string
   scan: ScanResult | null
   dataAt: string | null
-  onScan: () => void
   onRefresh: () => void
   onAddMachine: () => void
 }) {
-  const cloud = PANEL_MODE === 'cloud'
+  const [picking, setPicking] = useState(false)
 
   return (
     <div className="scan-bar">
@@ -27,23 +27,11 @@ export function ScanBar({
         <button
           type="button"
           className="btn btn-ghost"
-          onClick={onScan}
+          onClick={() => setPicking(true)}
           disabled={scanning}
         >
-          {scanning ? (
-            <Loader2 size={14} className="spin" />
-          ) : cloud ? (
-            <Server size={14} />
-          ) : (
-            <Wifi size={14} />
-          )}
-          {scanning
-            ? cloud
-              ? 'Reading…'
-              : 'Scanning…'
-            : cloud
-              ? 'Read this server'
-              : 'Scan network'}
+          {scanning ? <Loader2 size={14} className="spin" /> : <Wifi size={14} />}
+          {scanning ? 'Scanning…' : 'Scan…'}
         </button>
         <button type="button" className="btn btn-ghost" onClick={onRefresh}>
           <RefreshCw size={14} /> New data
@@ -52,18 +40,25 @@ export function ScanBar({
           <Plus size={14} /> Add machine
         </button>
         <span className="scan-time">
-          {scan ? `${cloud ? 'Read' : 'Scanned'} ${shortDateTime(scan.at)}` : 'Not scanned yet'}
+          {scan
+            ? `Read ${scan.target || 'this server'} ${shortDateTime(scan.at)}`
+            : 'Not scanned yet'}
         </span>
       </div>
 
       {error && <p className="scan-error">{error}</p>}
 
+      {scan && scan.public && (
+        <p className="scan-warn scan-warn--danger">
+          The last scan went to {scan.target}, which is a public range.
+        </p>
+      )}
+
       {scan && scan.devices.length > 0 && (
         <div className="scan-devices">
           <p className="micro-label">
-            {cloud
-              ? 'This server'
-              : `${scan.devices.length} devices on ${scan.subnet}`}
+            {scan.devices.length} device{scan.devices.length === 1 ? '' : 's'} on{' '}
+            {scan.target || scan.subnet}
           </p>
           <div className="chips">
             {scan.devices.map((device) => (
@@ -85,12 +80,14 @@ export function ScanBar({
 
       {!scan && !error && (
         <p className="scan-hint">
-          {cloud
-            ? 'Only this server is read: its own model endpoints, nothing else on the network. Add other machines by hand; nothing is polled in the background.'
-            : 'Nothing is polled in the background. Scan when you want fresh data — it reads the machines that are on the network now.'}
+          Nothing is polled in the background. Scan asks what to read: this server,
+          the local network when this machine has one, or an address or range you
+          name.
         </p>
       )}
       {scan && <p className="scan-hint">Last read {shortDateTime(dataAt)}</p>}
+
+      {picking && <ScanTargetModal onClose={() => setPicking(false)} />}
     </div>
   )
 }

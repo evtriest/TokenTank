@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import type { HostId, Provider, Quota, QuotaUnit, QuotaWindow, Verdict } from '../types'
-import { PANEL_MODE, useStore } from '../store'
+import { useStore } from '../store'
 import {
   UNIT_OPTIONS,
   WINDOW_OPTIONS,
@@ -80,7 +80,7 @@ function ProviderDetailBody({
     scan,
     scanning,
     scanError,
-    scanNetwork,
+    serverOnly,
     refreshData,
     updateProvider,
     removeProvider,
@@ -258,7 +258,7 @@ function ProviderDetailBody({
                 <div>
                   <h2>Machines</h2>
                   <p>
-                    {PANEL_MODE === 'cloud'
+                    {serverOnly
                       ? 'Where these models run. Read this server, or add another machine by hand after its SSH check.'
                       : 'Where these models run. Scan the network, or add a machine by hand.'}
                   </p>
@@ -270,7 +270,6 @@ function ProviderDetailBody({
                 error={scanError}
                 scan={scan}
                 dataAt={dataAt}
-                onScan={scanNetwork}
                 onRefresh={refreshData}
                 onAddMachine={onAddMachine}
               />

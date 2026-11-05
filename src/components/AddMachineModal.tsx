@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Loader2, Plus, RotateCcw, Terminal, X } from 'lucide-react'
-import { PANEL_MODE, useStore, type SshCheckResult } from '../store'
+import { useStore, type SshCheckResult } from '../store'
 import { uid } from '../lib/id'
 
 export function AddMachineModal({
@@ -11,7 +11,8 @@ export function AddMachineModal({
   onCreated: (id: string) => void
 }) {
   const { addMachine, sshCheck } = useStore()
-  const cloud = PANEL_MODE === 'cloud'
+  /** The SSH check lives on the server, so it is available on every deployment. */
+  const showSsh = true
   const [label, setLabel] = useState('')
   const [hostname, setHostname] = useState('')
   const [endpoint, setEndpoint] = useState('')
@@ -64,16 +65,6 @@ export function AddMachineModal({
       return
     }
 
-    if (cloud && !checked?.ok) {
-      if (!checked && hostname.trim()) {
-        setError('Checking the SSH connection first…')
-        void runCheck()
-        return
-      }
-      setError('The SSH connection has to work before this machine can be added.')
-      return
-    }
-
     const parsedModels = models
       .split('\n')
       .map((line) => line.trim())
@@ -90,13 +81,14 @@ export function AddMachineModal({
       endpoint: endpoint.trim(),
       detail: detail.trim(),
       models: parsedModels,
-      ssh: cloud
-        ? {
-            host: hostname.trim() || label.trim(),
-            port: Number(sshPort) || 22,
-            user: sshUser.trim(),
-          }
-        : undefined,
+      ssh:
+        hostname.trim() || sshUser.trim()
+          ? {
+              host: hostname.trim() || label.trim(),
+              port: Number(sshPort) || 22,
+              user: sshUser.trim(),
+            }
+          : undefined,
     })
 
     onCreated(id)
@@ -142,19 +134,19 @@ export function AddMachineModal({
               />
             </label>
             <label className="field">
-              <span>{cloud ? 'Hostname or IP' : 'Hostname'}</span>
+              <span>Hostname or IP</span>
               <input
                 value={hostname}
                 onChange={(event) => {
                   setHostname(event.target.value)
                   setChecked(null)
                 }}
-                placeholder={cloud ? 'e.g. studio.example.com' : 'e.g. studio'}
+                placeholder="e.g. studio.example.com"
               />
             </label>
           </div>
 
-          {cloud && (
+          {showSsh && (
             <div className="ssh-box">
               <div className="form-grid">
                 <label className="field">
@@ -212,7 +204,7 @@ export function AddMachineModal({
 
               {!checked && (
                 <p className="scan-hint">
-                  This panel logs in from the VPS before it adds the machine. The
+                  This panel logs in from its server before it adds the machine. The
                   other machine needs this server&rsquo;s key in its
                   <code> ~/.ssh/authorized_keys</code>.
                 </p>
@@ -293,7 +285,7 @@ export function AddMachineModal({
 
           <p className="panel-hint">
             Models you list here join the Local models provider and count toward this
-            machine.{cloud ? '' : ' A scan can fill this in for you later.'}
+            machine. A scan can fill this in for you later.
           </p>
 
           {error && <p className="form-error">{error}</p>}
@@ -305,12 +297,6 @@ export function AddMachineModal({
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={cloud && !checked?.ok}
-              title={
-                cloud && !checked?.ok
-                  ? 'Check the SSH connection first'
-                  : undefined
-              }
             >
               <Plus size={15} /> Add machine
             </button>

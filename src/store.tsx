@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -15,26 +16,23 @@ import type {
 } from './types'
 import { createSeedProviders } from './data/seed'
 import { createServerProvider, ensureLocalProvider } from './data/local'
-import { createDefaultMachines, createServerMachine, nextMachineAccent } from './lib/hosts'
+import { createDefaultMachines, nextMachineAccent } from './lib/hosts'
 import { rollProviders } from './lib/quota'
 import { uid } from './lib/id'
 
-export type PanelMode = 'local' | 'cloud'
-
-/** The cloud build reads only its own server and adds machines over SSH. */
-export const PANEL_MODE: PanelMode =
-  import.meta.env.VITE_PANEL_MODE === 'cloud' ? 'cloud' : 'local'
-
 /**
- * Each build keeps its own saved panel: the Pi's browser holds the network
- * view, the VPS browser holds the server view. Neither overwrites the other.
+ * One panel for every deployment. What it can read is decided at runtime by the
+ * server behind it: a machine on a private network can sweep that network, a
+ * public server reads itself — and either can be pointed at an address or range
+ * on purpose. The saved panel lives in this browser, so the Pi and the VPS never
+ * overwrite each other's list.
  */
-const STORAGE_KEY =
-  PANEL_MODE === 'cloud' ? 'freetokens.panel.cloud.v1' : 'freetokens.panel.v1'
-const STORAGE_VERSION = 3
+const STORAGE_KEY = 'freetokens.panel.v1'
+const STORAGE_VERSION = 4
 
 const API_BASE = import.meta.env.BASE_URL
 const SCAN_ENDPOINT = `${API_BASE}api/scan`
+const CONTEXT_ENDPOINT = `${API_BASE}api/context`
 const SSH_CHECK_ENDPOINT = `${API_BASE}api/ssh/check`
 
 const ACCENTS = ['#ff8a4c', '#a78bfa', '#7dd3fc', '#b7f077', '#f472b6', '#facc15', '#5eead4', '#fb923c']
@@ -59,12 +57,39 @@ export interface ScanDevice {
   models: { name: string; note: string }[]
 }
 
+/** What the server behind the panel says about its own network. */
+export interface ServerContext {
+  hostname: string
+  localIp: string
+  /** The private subnet this server sits on; empty on a public address. */
+  subnet: string
+  localNetwork: boolean
+  maxHosts: number
+}
+
+export type ScanScope = 'local' | 'self' | 'custom'
+
 export interface ScanResult {
   at: string
-  mode: PanelMode
+  scope: ScanScope
+  /** What was read: "192.168.43.0/24", "this server", "10.0.0.1-40". */
+  target: string
+  /** True when the target was outside the private ranges. */
+  public: boolean
   subnet: string
   localIp: string
   devices: ScanDevice[]
+}
+
+interface ScanPayload {
+  scannedAt?: string
+  scope?: ScanScope
+  target?: string
+  public?: boolean
+  localNetwork?: boolean
+  subnet?: string
+  localIp?: string
+  devices?: ScanDevice[]
 }
 
 export interface SshCheckResult {
@@ -76,7 +101,7 @@ export interface SshCheckResult {
 }
 
 interface SavedState {
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   providers: Provider[]
   machines?: Machine[]
   dataAt?: string | null
@@ -88,14 +113,15 @@ function loadState(now: number): {
   machines: Machine[]
   dataAt: string | null
   scan: ScanResult | null
+  /** False for a browser that has never saved a panel here. */
+  saved: boolean
 } {
   const fallback = {
-    providers:
-      PANEL_MODE === 'cloud' ? [createServerProvider(now)] : createSeedProviders(now),
-    machines:
-      PANEL_MODE === 'cloud' ? [createServerMachine(now)] : createDefaultMachines(now),
+    providers: [createServerProvider(now)],
+    machines: [] as Machine[],
     dataAt: null,
     scan: null,
+    saved: false,
   }
 
   try {
@@ -113,6 +139,7 @@ function loadState(now: number): {
       machines,
       dataAt: parsed.dataAt ?? null,
       scan: parsed.scan ?? null,
+      saved: true,
     }
   } catch {
     // Corrupt or unavailable storage: fall back to seed data.
@@ -170,7 +197,10 @@ interface Store {
   now: number
   dataAt: string | null
   scan: ScanResult | null
-  mode: PanelMode
+  /** What the server says about its own network, once it has answered. */
+  context: ServerContext | null
+  /** True when this panel has no private network, so the local entry is not ranked. */
+  serverOnly: boolean
   scanning: boolean
   scanError: string
   /** Ask the server whether it can log in to a machine over SSH. */
@@ -188,7 +218,8 @@ interface Store {
   addMachine: (draft: MachineDraft) => string
   removeMachine: (id: string) => void
   refreshData: () => void
-  scanNetwork: () => Promise<void>
+  /** "" lets the server pick; "self", "local" or an address/range pin it down. */
+  scanNetwork: (target: string) => Promise<boolean>
 }
 
 const StoreContext = createContext<Store | null>(null)
@@ -199,19 +230,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [machines, setMachines] = useState<Machine[]>(initial.machines)
   const [dataAt, setDataAt] = useState<string | null>(initial.dataAt)
   const [scan, setScan] = useState<ScanResult | null>(initial.scan)
+  const [context, setContext] = useState<ServerContext | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const [now, setNow] = useState(() => Date.now())
+  /** True once this panel has folded in a scan of its own deployment. */
+  const seenScan = useRef(initial.scan !== null)
+  const providersRef = useRef(providers)
+  const machinesRef = useRef(machines)
+  providersRef.current = providers
+  machinesRef.current = machines
+  const serverOnly = context !== null && !context.localNetwork
 
   useEffect(() => {
     saveState(providers, machines, dataAt, scan)
   }, [providers, machines, dataAt, scan])
 
-  // The cloud panel is supposed to show what this server really serves, so it
-  // reads the server once on open. After that only the Read button touches the
-  // network — the saved result is what you see on the next visit.
+  // Ask the server where it lives once, so the scan dialog knows whether a local
+  // network exists here. This status read never scans.
   useEffect(() => {
-    if (PANEL_MODE === 'cloud' && !initial.scan) void scanNetwork()
+    let alive = true
+    fetch(CONTEXT_ENDPOINT, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: ServerContext | null) => {
+        if (alive && payload && typeof payload.localNetwork === 'boolean') setContext(payload)
+      })
+      .catch(() => {
+        // Static hosting without server.py: the panel keeps working from saved data.
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // One read when the panel opens. What it covers is the server's call: the
+  // private network when there is one, only this server otherwise. After this
+  // the Scan button is the only thing that touches the network.
+  useEffect(() => {
+    if (!initial.scan) void scanNetwork('')
   }, [])
 
   useEffect(() => {
@@ -357,19 +413,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     )
   }
 
-  function applyScan(payload: {
-    scannedAt?: string
-    mode?: PanelMode
-    subnet?: string
-    localIp?: string
-    devices?: ScanDevice[]
-  }) {
+  /** Fold one scan payload into the panel. */
+  function applyScan(payload: ScanPayload) {
     const at = payload.scannedAt ?? new Date().toISOString()
-    const cloud = (payload.mode ?? PANEL_MODE) === 'cloud'
     const devices = Array.isArray(payload.devices) ? payload.devices : []
-    const hosted = devices.filter((device) => device.agent || cloud)
+    const scope: ScanScope =
+      payload.scope === 'self' ? 'self' : payload.scope === 'custom' ? 'custom' : 'local'
+    const localNetwork = payload.localNetwork ?? false
+
+    let baseProviders = providersRef.current
+    let baseMachines = machinesRef.current
+
+    // A panel with nothing saved adopts the machine it runs on: the provider
+    // board where there is a private network, only this server's own inventory
+    // on a bare public server.
+    if (!seenScan.current) {
+      seenScan.current = true
+      if (localNetwork) {
+        const stamp = Date.now()
+        baseProviders = createSeedProviders(stamp)
+        baseMachines = createDefaultMachines(stamp)
+      } else {
+        baseProviders = [createServerProvider(Date.now())]
+        baseMachines = []
+      }
+    }
+
+    const hosted = devices.filter(
+      (device) => device.agent !== null || device.reachable || scope === 'self',
+    )
     const mapping = new Map<string, string>()
-    const next = [...machines]
+    const next = [...baseMachines]
 
     for (const device of hosted) {
       const existing = next.find(
@@ -388,47 +462,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         short: existing?.short || label,
         hostname: device.hostname || existing?.hostname || '',
         endpoint: `${device.ip}:${device.port ?? 11434}`,
-        // The cloud panel is the live view of this server, so the card shows the
-        // agent it just answered with. The network build keeps its own notes.
-        detail: cloud
-          ? device.agent || existing?.detail || ''
-          : existing?.detail || device.agent || '',
+        // A scan is the freshest truth about the agent, so it beats a stale note.
+        detail: device.agent || existing?.detail || '',
         accent: existing?.accent ?? nextMachineAccent(next.length),
         checkedAt: at,
-        online: device.reachable || cloud,
+        online: device.reachable || scope === 'self',
       }
 
       if (existing) next[next.indexOf(existing)] = machine
       else next.push(machine)
     }
 
-    setMachines(next)
-
     const scannedModels = new Map<string, { name: string; note: string }[]>()
     for (const device of hosted) {
       const id = mapping.get(device.ip)
-      if (id && (device.reachable || cloud)) scannedModels.set(id, device.models ?? [])
+      if (id && (device.reachable || scope === 'self')) {
+        scannedModels.set(id, device.models ?? [])
+      }
     }
 
-    setProviders((current) =>
-      current.map((provider) => {
-        if (provider.kind !== 'local') return provider
-        let models = provider.models
-        for (const [machineId, entries] of scannedModels) {
-          models = mergeMachineModels(models, machineId, entries)
-        }
-        return { ...provider, models, updatedAt: at }
-      }),
-    )
+    const nextProviders = baseProviders.map((provider) => {
+      if (provider.kind !== 'local') return provider
+      let models = provider.models
+      for (const [machineId, entries] of scannedModels) {
+        models = mergeMachineModels(models, machineId, entries)
+      }
+      return { ...provider, models, updatedAt: at }
+    })
 
+    setMachines(next)
+    setProviders(nextProviders)
     setDataAt(at)
     setScan({
       at,
-      mode: cloud ? 'cloud' : 'local',
+      scope,
+      target: payload.target || (scope === 'self' ? 'this server' : ''),
+      public: Boolean(payload.public),
       subnet: payload.subnet ?? '',
       localIp: payload.localIp ?? '',
       devices,
     })
+    setContext((current) =>
+      current
+        ? { ...current, localNetwork, localIp: payload.localIp || current.localIp }
+        : current,
+    )
   }
 
   async function sshCheck(input: {
@@ -452,40 +530,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return payload
   }
 
-  async function scanNetwork() {
+  async function scanNetwork(target: string): Promise<boolean> {
     setScanning(true)
     setScanError('')
     try {
-      const response = await fetch(`${SCAN_ENDPOINT}?refresh=1`, {
+      const params = new URLSearchParams({ refresh: '1' })
+      if (target) params.set('target', target)
+      const response = await fetch(`${SCAN_ENDPOINT}?${params.toString()}`, {
         headers: { Accept: 'application/json' },
         cache: 'no-store',
       })
-      const type = response.headers.get('content-type') ?? ''
-      if (!response.ok || !type.includes('application/json')) {
+      if (response.status === 409) {
         throw new Error(
-          PANEL_MODE === 'cloud'
-            ? 'No scanner behind this address. Start the panel service on this VPS to read it.'
-            : 'No scanner behind this address. Open the panel on the Pi (port 8094) to scan the network.',
+          'That target is outside the private ranges. Confirm the scan to go ahead.',
         )
       }
-      applyScan(
-        (await response.json()) as {
-          scannedAt?: string
-          mode?: PanelMode
-          subnet?: string
-          localIp?: string
-          devices?: ScanDevice[]
-        },
-      )
+      const type = response.headers.get('content-type') ?? ''
+      if (!type.includes('application/json')) {
+        throw new Error(
+          'No scanner behind this address. Run server.py next to the build to scan.',
+        )
+      }
+      const payload = (await response.json()) as ScanPayload & { error?: string }
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error ?? `The scanner answered ${response.status}.`)
+      }
+      applyScan(payload)
+      return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Scan failed'
-      setScanError(
-        message.includes('JSON') || message.includes('fetch')
-          ? PANEL_MODE === 'cloud'
-            ? 'No scanner behind this address. Start the panel service on this VPS to read it.'
-            : 'No scanner behind this address. Open the panel on the Pi (port 8094) to scan the network.'
-          : message,
-      )
+      setScanError(error instanceof Error ? error.message : 'The scan failed.')
+      return false
     } finally {
       setScanning(false)
     }
@@ -499,7 +573,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         now,
         dataAt,
         scan,
-        mode: PANEL_MODE,
+        context,
+        serverOnly,
         scanning,
         scanError,
         sshCheck,
