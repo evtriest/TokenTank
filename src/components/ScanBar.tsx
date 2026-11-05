@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Loader2, Plus, RefreshCw, Wifi } from 'lucide-react'
 import { shortDateTime } from '../lib/display'
-import type { ScanResult } from '../store'
+import type { ScanHistoryEntry, ScanResult } from '../store'
 import { ScanTargetModal } from './ScanTargetModal'
 
 export function ScanBar({
   scanning,
   error,
   scan,
+  history,
   dataAt,
   onRefresh,
   onAddMachine,
@@ -15,11 +16,15 @@ export function ScanBar({
   scanning: boolean
   error: string
   scan: ScanResult | null
+  history: ScanHistoryEntry[]
   dataAt: string | null
   onRefresh: () => void
   onAddMachine: () => void
 }) {
   const [picking, setPicking] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  // The newest entry is the read already shown above it.
+  const earlier = history.slice(1)
 
   return (
     <div className="scan-bar">
@@ -75,6 +80,35 @@ export function ScanBar({
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {earlier.length > 0 && (
+        <div className="scan-history">
+          <button
+            type="button"
+            className="scan-history-toggle"
+            onClick={() => setShowHistory((open) => !open)}
+          >
+            {showHistory ? 'Hide' : 'Earlier scans'} ({earlier.length})
+          </button>
+          {showHistory && (
+            <ol className="scan-history-list">
+              {earlier.map((entry) => (
+                <li key={`${entry.at}-${entry.target}`} className="scan-history-row">
+                  <span className="scan-history-time">{shortDateTime(entry.at)}</span>
+                  <span className={`scan-history-target ${entry.public ? 'is-public' : ''}`}>
+                    {entry.target || 'this server'}
+                    {entry.public && ' · public'}
+                  </span>
+                  <span className="scan-history-count">
+                    {entry.devices} device{entry.devices === 1 ? '' : 's'}
+                    {entry.models > 0 && ` · ${entry.models} model${entry.models === 1 ? '' : 's'}`}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       )}
 

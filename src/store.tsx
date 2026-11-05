@@ -28,7 +28,9 @@ import { uid } from './lib/id'
  * overwrite each other's list.
  */
 const STORAGE_KEY = 'freetokens.panel.v1'
-const STORAGE_VERSION = 4
+const STORAGE_VERSION = 5
+/** How many past reads the panel remembers. */
+const HISTORY_LIMIT = 12
 
 const API_BASE = import.meta.env.BASE_URL
 const SCAN_ENDPOINT = `${API_BASE}api/scan`
@@ -81,6 +83,16 @@ export interface ScanResult {
   devices: ScanDevice[]
 }
 
+/** One line in the panel's own record of what it has read, and when. */
+export interface ScanHistoryEntry {
+  at: string
+  scope: ScanScope
+  target: string
+  public: boolean
+  devices: number
+  models: number
+}
+
 interface ScanPayload {
   scannedAt?: string
   scope?: ScanScope
@@ -101,11 +113,12 @@ export interface SshCheckResult {
 }
 
 interface SavedState {
-  version: 1 | 2 | 3 | 4
+  version: 1 | 2 | 3 | 4 | 5
   providers: Provider[]
   machines?: Machine[]
   dataAt?: string | null
   scan?: ScanResult | null
+  history?: ScanHistoryEntry[]
 }
 
 function loadState(now: number): {
@@ -113,6 +126,7 @@ function loadState(now: number): {
   machines: Machine[]
   dataAt: string | null
   scan: ScanResult | null
+  history: ScanHistoryEntry[]
   /** False for a browser that has never saved a panel here. */
   saved: boolean
 } {
@@ -121,6 +135,7 @@ function loadState(now: number): {
     machines: [] as Machine[],
     dataAt: null,
     scan: null,
+    history: [] as ScanHistoryEntry[],
     saved: false,
   }
 
@@ -139,6 +154,7 @@ function loadState(now: number): {
       machines,
       dataAt: parsed.dataAt ?? null,
       scan: parsed.scan ?? null,
+      history: Array.isArray(parsed.history) ? parsed.history : [],
       saved: true,
     }
   } catch {
@@ -152,6 +168,7 @@ function saveState(
   machines: Machine[],
   dataAt: string | null,
   scan: ScanResult | null,
+  history: ScanHistoryEntry[],
 ): void {
   try {
     localStorage.setItem(
@@ -162,6 +179,7 @@ function saveState(
         machines,
         dataAt,
         scan,
+        history,
       }),
     )
   } catch {
@@ -197,6 +215,8 @@ interface Store {
   now: number
   dataAt: string | null
   scan: ScanResult | null
+  /** Newest first; what earlier reads covered, not what they found. */
+  history: ScanHistoryEntry[]
   /** What the server says about its own network, once it has answered. */
   context: ServerContext | null
   /** True when this panel has no private network, so the local entry is not ranked. */
@@ -230,6 +250,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [machines, setMachines] = useState<Machine[]>(initial.machines)
   const [dataAt, setDataAt] = useState<string | null>(initial.dataAt)
   const [scan, setScan] = useState<ScanResult | null>(initial.scan)
+  const [history, setHistory] = useState<ScanHistoryEntry[]>(initial.history)
   const [context, setContext] = useState<ServerContext | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
@@ -243,8 +264,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const serverOnly = context !== null && !context.localNetwork
 
   useEffect(() => {
-    saveState(providers, machines, dataAt, scan)
-  }, [providers, machines, dataAt, scan])
+    saveState(providers, machines, dataAt, scan, history)
+  }, [providers, machines, dataAt, scan, history])
 
   // Ask the server where it lives once, so the scan dialog knows whether a local
   // network exists here. This status read never scans.
@@ -490,10 +511,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return { ...provider, models, updatedAt: at }
     })
 
-    setMachines(next)
-    setProviders(nextProviders)
-    setDataAt(at)
-    setScan({
+    const result: ScanResult = {
       at,
       scope,
       target: payload.target || (scope === 'self' ? 'this server' : ''),
@@ -501,7 +519,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       subnet: payload.subnet ?? '',
       localIp: payload.localIp ?? '',
       devices,
-    })
+    }
+
+    setMachines(next)
+    setProviders(nextProviders)
+    setDataAt(at)
+    setScan(result)
+    setHistory((current) =>
+      [
+        {
+          at: result.at,
+          scope: result.scope,
+          target: result.target,
+          public: result.public,
+          devices: result.devices.length,
+          models: result.devices.reduce((total, device) => total + device.models.length, 0),
+        },
+        ...current,
+      ].slice(0, HISTORY_LIMIT),
+    )
     setContext((current) =>
       current
         ? { ...current, localNetwork, localIp: payload.localIp || current.localIp }
@@ -573,6 +609,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         now,
         dataAt,
         scan,
+        history,
         context,
         serverOnly,
         scanning,

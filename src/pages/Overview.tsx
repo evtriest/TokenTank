@@ -26,6 +26,7 @@ export function Overview({
     now,
     dataAt,
     scan,
+    history,
     scanning,
     scanError,
     serverOnly,
@@ -139,6 +140,7 @@ export function Overview({
             scanning={scanning}
             error={scanError}
             scan={scan}
+            history={history}
             dataAt={dataAt}
             onRefresh={refreshData}
             onAddMachine={onAddMachine}

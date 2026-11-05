@@ -78,6 +78,7 @@ function ProviderDetailBody({
     machines,
     dataAt,
     scan,
+    history,
     scanning,
     scanError,
     serverOnly,
@@ -269,6 +270,7 @@ function ProviderDetailBody({
                 scanning={scanning}
                 error={scanError}
                 scan={scan}
+                history={history}
                 dataAt={dataAt}
                 onRefresh={refreshData}
                 onAddMachine={onAddMachine}
