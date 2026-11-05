@@ -40,7 +40,7 @@ export function Sidebar({ onAdd }: { onAdd: () => void }) {
       <a className="brand" href="#/">
         <span className="brand-mark">F</span>
         <span className="brand-copy">
-          <strong>freetokens</strong>
+          <strong>tokentank</strong>
           <small>model panel</small>
         </span>
       </a>

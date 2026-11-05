@@ -1,6 +1,6 @@
-# What's left in the bank
+# TokenTank
 
-A local-first panel for free model providers: what is in rotation, what a
+*What's left in the tank.* A local-first panel for free model providers: what is in rotation, what a
 provider's quota is, how much is left, when it refills, and which models a local
 machine actually serves. No account, no backend database, nothing polled in the
 background.
@@ -17,6 +17,9 @@ runs in.
 | Machines | discovered by the scan | one server entry plus machines you add by hand over SSH |
 | Servers | `python3 server.py --port 8094` on the Pi | `python3 server.py --cloud --port 8094 --bind 127.0.0.1` behind nginx |
 | State | `localStorage` key `freetokens.panel.v1` | `localStorage` key `freetokens.panel.cloud.v1` |
+
+The storage keys kept their old `freetokens.` prefix on purpose: a panel that
+was already in use keeps its saved state through the rename.
 
 The cloud panel starts with an empty rotation and an empty try list: it only
 shows what is live on that server, and it reads the server once when it opens.
@@ -54,9 +57,9 @@ version next to the models.
 
 ```sh
 npm run build:cloud
-rsync -a --delete dist-cloud/ host:~/freetokens/dist/
-scp server.py host:~/freetokens/
-ssh host 'cd ~/freetokens && python3 server.py --cloud --port 8094 --bind 127.0.0.1 --directory dist'
+rsync -a --delete dist-cloud/ host:~/tokentank/dist/
+scp server.py host:~/tokentank/
+ssh host 'cd ~/tokentank && python3 server.py --cloud --port 8094 --bind 127.0.0.1 --directory dist'
 ```
 
 nginx puts the panel on a path behind basic auth:

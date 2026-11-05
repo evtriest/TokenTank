@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freetokens panel server: static build plus a local-network model scanner.
+"""TokenTank panel server: static build plus a local-network model scanner.
 
 Serves the built panel and answers GET /api/scan with every device it can see
 on the local subnet, and the model list of any host running Ollama or an
@@ -145,7 +145,7 @@ def tcp_open(ip: str, port: int) -> bool:
 
 
 def get_json(url: str) -> object | None:
-    request = urllib.request.Request(url, headers={"User-Agent": "freetokens-scan"})
+    request = urllib.request.Request(url, headers={"User-Agent": "tokentank-scan"})
     try:
         with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
             return json.loads(response.read().decode("utf-8", "replace"))
@@ -403,7 +403,7 @@ def scan_cached(force: bool, cloud: bool = False) -> dict[str, object]:
 
 
 class Handler(SimpleHTTPRequestHandler):
-    server_version = "Freetokens/1.0"
+    server_version = "TokenTank/1.0"
     cloud_mode = False
     def send_json(self, payload: object, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -477,7 +477,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Freetokens panel + LAN scanner")
+    parser = argparse.ArgumentParser(description="TokenTank panel + LAN scanner")
     parser.add_argument("--port", type=int, default=8094)
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--directory", default="dist")
